@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ledger — Time Tracking</title>
+<title>pHours — Time Tracking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -26,7 +26,7 @@
 
   header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
   .brand { display: flex; flex-direction: column; gap: 2px; }
-  .brand .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--brass-bright); }
+  .brand .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.1em; color: var(--brass-bright); font-weight: 600; }
   .brand h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
   .today-total { text-align: right; }
   .today-total .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
@@ -72,6 +72,12 @@
   .btn-brass:hover { filter: brightness(1.1); }
   .btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--paper); }
   .btn-ghost:hover { background: var(--ink-soft); border-color: var(--brass); }
+  .btn-danger { background: var(--record); color: var(--paper); }
+  .btn-danger:hover { filter: brightness(1.1); }
+  .btn-small { padding: 8px 12px; font-size: 12px; flex-shrink: 0; }
+  .task-row.is-confirming { border-left-color: var(--record); background: #2b1f1e; align-items: center; }
+  .task-row.is-confirming .ttitle { color: var(--paper); font-weight: 500; white-space: normal; }
+  .task-row.is-confirming .task-controls { gap: 8px; }
 
   /* Task list */
   .ledger-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
@@ -230,7 +236,8 @@ react-dom/cjs/react-dom-client.production.js:
 </script>
 <script>
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
-const DB_NAME = "timeledger";
+const DB_NAME = "phours";
+const OLD_DB_NAME = "timeledger";
 const DB_VERSION = 1;
 const LEGACY_KEY = "timeledger.v1";
 function openDB() {
@@ -294,6 +301,51 @@ async function migrateLegacyIfNeeded() {
     localStorage.removeItem(LEGACY_KEY);
   } catch (e) {
     console.error("migration failed", e);
+  }
+}
+async function oldDbExists() {
+  try {
+    if (typeof indexedDB.databases === "function") {
+      const dbs = await indexedDB.databases();
+      return dbs.some((d) => d.name === OLD_DB_NAME);
+    }
+  } catch (e) {
+  }
+  return true;
+}
+function openOldDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(OLD_DB_NAME);
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = () => resolve(null);
+  });
+}
+async function migrateOldDbIfNeeded() {
+  try {
+    if (!await oldDbExists()) return;
+    const oldDb = await openOldDB();
+    if (!oldDb) return;
+    if (!oldDb.objectStoreNames.contains("tasks") || !oldDb.objectStoreNames.contains("sessions")) {
+      oldDb.close();
+      return;
+    }
+    const oldTasks = await new Promise((res, rej) => {
+      const tx = oldDb.transaction("tasks", "readonly");
+      const r = tx.objectStore("tasks").getAll();
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const oldSessions = await new Promise((res, rej) => {
+      const tx = oldDb.transaction("sessions", "readonly");
+      const r = tx.objectStore("sessions").getAll();
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    oldDb.close();
+    for (const t of oldTasks) await idbPut("tasks", t);
+    for (const s of oldSessions) await idbPut("sessions", s);
+  } catch (e) {
+    console.error("old db migration failed", e);
   }
 }
 const PALETTE = ["#B8863B", "#3E6E63", "#7A5C8E", "#5B7FA6", "#A65B5B", "#8E8E4A"];
@@ -390,12 +442,19 @@ function getPeriodRange(period, customFrom, customTo) {
 function StatusDot({ running }) {
   return /* @__PURE__ */ React.createElement("span", { className: "status-dot" + (running ? " is-live" : "") });
 }
+function ArchiveIcon() {
+  return /* @__PURE__ */ React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("polyline", { points: "21 8 21 21 3 21 3 8" }), /* @__PURE__ */ React.createElement("rect", { x: "1", y: "3", width: "22", height: "5" }), /* @__PURE__ */ React.createElement("line", { x1: "10", y1: "12", x2: "14", y2: "12" }));
+}
 function TaskRow({ task, running, now, onStart, onStop, onArchive, onUnarchive, onDelete, onOpenFocus, archived }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const elapsed = elapsedInRange([].concat(task._sessions), task.id, startOfDayMs(now), now, now);
   const handleRowClick = () => {
     if (!archived) onOpenFocus(task.id);
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "task-row" + (running ? " is-running" : "") + (archived ? " is-archived" : ""), onClick: handleRowClick }, /* @__PURE__ */ React.createElement("div", { className: "task-info" }, /* @__PURE__ */ React.createElement("div", { className: "tkey" }, task.key), /* @__PURE__ */ React.createElement("div", { className: "ttitle" }, /* @__PURE__ */ React.createElement(StatusDot, { running }), task.title)), /* @__PURE__ */ React.createElement("div", { className: "task-clock" }, fmtHMS(elapsed)), /* @__PURE__ */ React.createElement("div", { className: "task-controls", onClick: (e) => e.stopPropagation() }, !archived && !running && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn start", title: "Start", onClick: () => onStart(task.id) }, "\u25B6"), !archived && running && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn stop", title: "Stop", onClick: () => onStop(task.id) }, "\u25A0"), !archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn", title: "Archive", onClick: () => onArchive(task.id) }, "\u21E9"), archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn restore", title: "Restore", onClick: () => onUnarchive(task.id) }, "\u21BA"), archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn danger", title: "Delete permanently", onClick: () => onDelete(task.id) }, "\u2715")));
+  if (confirmingDelete) {
+    return /* @__PURE__ */ React.createElement("div", { className: "task-row is-archived is-confirming" }, /* @__PURE__ */ React.createElement("div", { className: "task-info" }, /* @__PURE__ */ React.createElement("div", { className: "tkey" }, task.key), /* @__PURE__ */ React.createElement("div", { className: "ttitle" }, 'Delete "', task.title, '" and all its logged time?')), /* @__PURE__ */ React.createElement("div", { className: "task-controls" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost btn-small", onClick: () => setConfirmingDelete(false) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger btn-small", onClick: () => onDelete(task.id) }, "Delete forever")));
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "task-row" + (running ? " is-running" : "") + (archived ? " is-archived" : ""), onClick: handleRowClick }, /* @__PURE__ */ React.createElement("div", { className: "task-info" }, /* @__PURE__ */ React.createElement("div", { className: "tkey" }, task.key), /* @__PURE__ */ React.createElement("div", { className: "ttitle" }, /* @__PURE__ */ React.createElement(StatusDot, { running }), task.title)), /* @__PURE__ */ React.createElement("div", { className: "task-clock" }, fmtHMS(elapsed)), /* @__PURE__ */ React.createElement("div", { className: "task-controls", onClick: (e) => e.stopPropagation() }, !archived && !running && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn start", title: "Start", onClick: () => onStart(task.id) }, "\u25B6"), !archived && running && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn stop", title: "Stop", onClick: () => onStop(task.id) }, "\u25A0"), !archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn", title: "Archive", onClick: () => onArchive(task.id) }, /* @__PURE__ */ React.createElement(ArchiveIcon, null)), archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn restore", title: "Restore", onClick: () => onUnarchive(task.id) }, "\u21BA"), archived && /* @__PURE__ */ React.createElement("button", { className: "ctrl-btn danger", title: "Delete permanently", onClick: () => setConfirmingDelete(true) }, "\u2715")));
 }
 function ActiveBanner({ task, now, onStop, onFocus }) {
   if (!task) return null;
@@ -599,6 +658,7 @@ function App() {
       let t = await idbGetAll("tasks");
       let s = await idbGetAll("sessions");
       if (t.length === 0 && s.length === 0) {
+        await migrateOldDbIfNeeded();
         await migrateLegacyIfNeeded();
         t = await idbGetAll("tasks");
         s = await idbGetAll("sessions");
@@ -673,7 +733,6 @@ function App() {
     }));
   }, []);
   const deleteTask = useCallback((taskId) => {
-    if (!confirm("Delete this task and all its logged sessions? This cannot be undone.")) return;
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
     setSessions((prev) => {
       const toDelete = prev.filter((s) => s.taskId === taskId);
@@ -692,9 +751,9 @@ function App() {
   const focusTaskWithSessions = focusTask ? Object.assign({}, focusTask, { _sessions: sessions.filter((s) => s.taskId === focusTask.id) }) : null;
   const focusRunning = focusTask ? !!openSessionFor(sessions, focusTask.id) : false;
   if (!loaded) {
-    return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("div", { className: "empty-state", style: { marginTop: 60 } }, "Loading your ledger\u2026"));
+    return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("div", { className: "empty-state", style: { marginTop: 60 } }, "Loading\u2026"));
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "eyebrow" }, "Time Ledger"), /* @__PURE__ */ React.createElement("h1", null, "Work Sessions")), /* @__PURE__ */ React.createElement("div", { className: "today-total" }, /* @__PURE__ */ React.createElement("div", { className: "label" }, "Today, total logged"), /* @__PURE__ */ React.createElement("div", { className: "value" }, fmtHMS(todayTotal)))), /* @__PURE__ */ React.createElement("div", { className: "tabs" }, /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "tracker" ? " active" : ""), onClick: () => setActiveTab("tracker") }, "Tracker"), /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "overview" ? " active" : ""), onClick: () => setActiveTab("overview") }, "Overview")), activeTab === "tracker" ? /* @__PURE__ */ React.createElement(TrackerTab, { tasks, sessions, now, actions, onOpenFocus: setFocusTaskId }) : /* @__PURE__ */ React.createElement(OverviewTab, { tasks, sessions, now }), /* @__PURE__ */ React.createElement("footer", null, "Stored locally in this browser's database only \xB7 nothing leaves your machine"), focusTaskWithSessions && /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "eyebrow" }, "pHours"), /* @__PURE__ */ React.createElement("h1", null, "Work Sessions")), /* @__PURE__ */ React.createElement("div", { className: "today-total" }, /* @__PURE__ */ React.createElement("div", { className: "label" }, "Today, total logged"), /* @__PURE__ */ React.createElement("div", { className: "value" }, fmtHMS(todayTotal)))), /* @__PURE__ */ React.createElement("div", { className: "tabs" }, /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "tracker" ? " active" : ""), onClick: () => setActiveTab("tracker") }, "Tracker"), /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "overview" ? " active" : ""), onClick: () => setActiveTab("overview") }, "Overview")), activeTab === "tracker" ? /* @__PURE__ */ React.createElement(TrackerTab, { tasks, sessions, now, actions, onOpenFocus: setFocusTaskId }) : /* @__PURE__ */ React.createElement(OverviewTab, { tasks, sessions, now }), /* @__PURE__ */ React.createElement("footer", null, "Stored locally in this browser's database only \xB7 nothing leaves your machine"), focusTaskWithSessions && /* @__PURE__ */ React.createElement(
     FocusOverlay,
     {
       task: focusTaskWithSessions,
