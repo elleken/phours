@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pHours — Time Tracking</title>
+<title>Tasky McTaskface — Time Tracking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -26,7 +26,7 @@
 
   header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
   .brand { display: flex; flex-direction: column; gap: 2px; }
-  .brand .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.1em; color: var(--brass-bright); font-weight: 600; }
+  .brand .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--brass-bright); }
   .brand h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
   .today-total { text-align: right; }
   .today-total .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
@@ -236,8 +236,8 @@ react-dom/cjs/react-dom-client.production.js:
 </script>
 <script>
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
-const DB_NAME = "phours";
-const OLD_DB_NAME = "timeledger";
+const DB_NAME = "taskymctaskface";
+const OLD_DB_NAMES = ["phours", "timeledger"];
 const DB_VERSION = 1;
 const LEGACY_KEY = "timeledger.v1";
 function openDB() {
@@ -303,47 +303,52 @@ async function migrateLegacyIfNeeded() {
     console.error("migration failed", e);
   }
 }
-async function oldDbExists() {
+async function existingDbNames() {
   try {
     if (typeof indexedDB.databases === "function") {
       const dbs = await indexedDB.databases();
-      return dbs.some((d) => d.name === OLD_DB_NAME);
+      return dbs.map((d) => d.name);
     }
   } catch (e) {
   }
-  return true;
+  return null;
 }
-function openOldDB() {
+function openOldDB(name) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(OLD_DB_NAME);
+    const req = indexedDB.open(name);
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = () => resolve(null);
   });
 }
 async function migrateOldDbIfNeeded() {
   try {
-    if (!await oldDbExists()) return;
-    const oldDb = await openOldDB();
-    if (!oldDb) return;
-    if (!oldDb.objectStoreNames.contains("tasks") || !oldDb.objectStoreNames.contains("sessions")) {
+    const present = await existingDbNames();
+    const candidates = present ? OLD_DB_NAMES.filter((n) => present.includes(n)) : OLD_DB_NAMES;
+    for (const name of candidates) {
+      const oldDb = await openOldDB(name);
+      if (!oldDb) continue;
+      if (!oldDb.objectStoreNames.contains("tasks") || !oldDb.objectStoreNames.contains("sessions")) {
+        oldDb.close();
+        continue;
+      }
+      const oldTasks = await new Promise((res, rej) => {
+        const tx = oldDb.transaction("tasks", "readonly");
+        const r = tx.objectStore("tasks").getAll();
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      const oldSessions = await new Promise((res, rej) => {
+        const tx = oldDb.transaction("sessions", "readonly");
+        const r = tx.objectStore("sessions").getAll();
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
       oldDb.close();
+      if (oldTasks.length === 0 && oldSessions.length === 0) continue;
+      for (const t of oldTasks) await idbPut("tasks", t);
+      for (const s of oldSessions) await idbPut("sessions", s);
       return;
     }
-    const oldTasks = await new Promise((res, rej) => {
-      const tx = oldDb.transaction("tasks", "readonly");
-      const r = tx.objectStore("tasks").getAll();
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    });
-    const oldSessions = await new Promise((res, rej) => {
-      const tx = oldDb.transaction("sessions", "readonly");
-      const r = tx.objectStore("sessions").getAll();
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    });
-    oldDb.close();
-    for (const t of oldTasks) await idbPut("tasks", t);
-    for (const s of oldSessions) await idbPut("sessions", s);
   } catch (e) {
     console.error("old db migration failed", e);
   }
@@ -753,7 +758,7 @@ function App() {
   if (!loaded) {
     return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("div", { className: "empty-state", style: { marginTop: 60 } }, "Loading\u2026"));
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "eyebrow" }, "pHours"), /* @__PURE__ */ React.createElement("h1", null, "Work Sessions")), /* @__PURE__ */ React.createElement("div", { className: "today-total" }, /* @__PURE__ */ React.createElement("div", { className: "label" }, "Today, total logged"), /* @__PURE__ */ React.createElement("div", { className: "value" }, fmtHMS(todayTotal)))), /* @__PURE__ */ React.createElement("div", { className: "tabs" }, /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "tracker" ? " active" : ""), onClick: () => setActiveTab("tracker") }, "Tracker"), /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "overview" ? " active" : ""), onClick: () => setActiveTab("overview") }, "Overview")), activeTab === "tracker" ? /* @__PURE__ */ React.createElement(TrackerTab, { tasks, sessions, now, actions, onOpenFocus: setFocusTaskId }) : /* @__PURE__ */ React.createElement(OverviewTab, { tasks, sessions, now }), /* @__PURE__ */ React.createElement("footer", null, "Stored locally in this browser's database only \xB7 nothing leaves your machine"), focusTaskWithSessions && /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement("div", { className: "wrap" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("div", { className: "brand" }, /* @__PURE__ */ React.createElement("span", { className: "eyebrow" }, "Work Sessions"), /* @__PURE__ */ React.createElement("h1", null, "Tasky McTaskface")), /* @__PURE__ */ React.createElement("div", { className: "today-total" }, /* @__PURE__ */ React.createElement("div", { className: "label" }, "Today, total logged"), /* @__PURE__ */ React.createElement("div", { className: "value" }, fmtHMS(todayTotal)))), /* @__PURE__ */ React.createElement("div", { className: "tabs" }, /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "tracker" ? " active" : ""), onClick: () => setActiveTab("tracker") }, "Tracker"), /* @__PURE__ */ React.createElement("button", { className: "tab-btn" + (activeTab === "overview" ? " active" : ""), onClick: () => setActiveTab("overview") }, "Overview")), activeTab === "tracker" ? /* @__PURE__ */ React.createElement(TrackerTab, { tasks, sessions, now, actions, onOpenFocus: setFocusTaskId }) : /* @__PURE__ */ React.createElement(OverviewTab, { tasks, sessions, now }), /* @__PURE__ */ React.createElement("footer", null, "Stored locally in this browser's database only \xB7 nothing leaves your machine"), focusTaskWithSessions && /* @__PURE__ */ React.createElement(
     FocusOverlay,
     {
       task: focusTaskWithSessions,
